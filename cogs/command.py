@@ -1,10 +1,34 @@
 import random
 import time
+import asyncio
 from discord.ext import commands, tasks
 from discord.ext.commands import BucketType, CommandOnCooldown
 from datetime import datetime, timedelta
 from cogs.counter import get_count, update_count
 
+
+async def check_channel_and_delete(message):
+    """檢查頻道並刪除訊息，返回是否需要停止處理"""
+    # 需要判斷用戶是否擁有這三個身份組中的任一個
+    allowed_roles = ["可愛天才世界第一", "湊的工具人(MOD)", "管管"]
+    
+    # 獲取用戶所有身份組名稱
+    user_roles = [role.name for role in message.author.roles]
+
+    # 在控制台打印用戶的身份組，幫助你調試
+    print(f"User {message.author.name} roles: {user_roles}")
+
+    # 如果用戶擁有這三個身份組中的任意一個，則不刪除訊息
+    if any(role in allowed_roles for role in user_roles):
+        return False  # 不刪除訊息，繼續執行後續操作
+
+    # 如果是 "湊湊福神社🍀" 頻道且用戶沒有上述身份組，則刪除訊息
+    if message.channel.name == "湊湊福神社🍀":
+        await message.delete()  # 刪除訊息
+        await message.channel.send(f"{message.author.mention} 只能使用 `!每日抽籤` 指令喔！")
+        return True  # 停止處理，消息已刪除
+
+    return False  # 不需要刪除訊息，繼續處理
 
 class CommandCog(commands.Cog):
 
@@ -12,15 +36,15 @@ class CommandCog(commands.Cog):
         self.bot = bot
         self.cooldowns = {}
         self.fortunes = [
-            ("大吉：你的運氣極好，今後一段時間內，無論做什麼都會非常順利！成功將屬於你！", 10),
-            ("中吉：這是個相對穩定的時期。努力會有所回報，保持積極心態，運氣會越來越好。", 10),
-            ("小吉：今天的運勢偏向小範圍的好運。雖然有些小困難，但仍然能夠順利克服，事事如意。", 10),
-            ("吉：今後會有些許順利。雖然並不完全是最好的運勢，但你會收穫一些小確幸。", 10),
-            ("半吉：今有些小波折，但並不會嚴重影響你的行程。調整心態，保持冷靜，你仍能度過。", 10),
-            ("末吉：即使現在的運勢不太好，但它也只是暫時的。耐心等待，未來有轉機。", 10),
-            ("ㄐ吉：不可思議的命運之力降臨，你被神秘的「ㄐ吉怪人」選中，這是命中注定的奇異時刻！你的未來將充滿未知與挑戰，迎接這場難以預料的命運之旅吧！", 0.1),
-            ("凶：小心！近期的運勢偏向不利。不要輕易做出重大決策，保持冷靜並尋求他人建議。", 10),
-            ("大凶：運氣極差，可能會面臨一些不利的情況或挑戰。此時應該避開風險，做好準備。", 10),
+            ("大吉：你的運氣極好，今後一段時間內，無論做什麼都會非常順利！成功將屬於你！", 10, "🎉"),
+            ("中吉：這是個相對穩定的時期。努力會有所回報，保持積極心態，運氣會越來越好。", 10, "😊"),
+            ("吉：今後會有些許順利。雖然並不完全是最好的運勢，但你會收穫一些小確幸。", 10, "🍀"),
+            ("小吉：今天的運勢偏向小範圍的好運。雖然有些小困難，但仍然能夠順利克服，事事如意。", 10, "🌸"),
+            ("半吉：今有些小波折，但並不會嚴重影響你的行程。調整心態，保持冷靜，你仍能度過。", 10, "🍃"),
+            ("末吉：即使現在的運勢不太好，但它也只是暫時的。耐心等待，未來有轉機。", 10, "🍂"),
+            ("ㄐ吉：不可思議的命運之力降臨，你被神秘的「ㄐ吉怪人」選中，這是命中注定的奇異時刻！你的未來將充滿未知與挑戰，迎接這場難以預料的命運之旅吧！", 0.1, "🌟"),
+            ("凶：小心！近期的運勢偏向不利。不要輕易做出重大決策，保持冷靜並尋求他人建議。", 10, "💀"),
+            ("大凶：運氣極差，可能會面臨一些不利的情況或挑戰。此時應該避開風險，做好準備。", 10, "☠️"),
         ]
         self.last_reset_time = self.get_next_reset_time()
 
@@ -49,25 +73,35 @@ class CommandCog(commands.Cog):
             self.last_reset_time = self.get_next_reset_time()  # 更新為下一次6點
     
     @commands.command(name="每日抽籤")
-    async def daily_fortune(self, message):  # message 是一個 commands.Context 物件
+    async def daily_fortune(self, message):
         """每天抽籤指令"""
-        # 檢查是否在湊湊福神社🍀頻道
         if message.channel.name != "湊湊福神社🍀":
             await message.send(f"{message.author.mention} 只有在「湊湊福神社🍀」這個頻道可以抽籤喔！")
             return
 
         user_id = message.author.id
         if not self.is_on_cooldown(user_id, "每日抽籤"):
-            # 根據權重隨機抽籤
-            total_weight = sum(weight for _, weight in self.fortunes)
+            # 發牌動畫：逐張顯示卡背
+            draw_msg = await message.send("🎴")
+
+            # 抽籤邏輯（含 emoji）
+            total_weight = sum(weight for _, weight, _ in self.fortunes)
             rand_num = random.uniform(0, total_weight)
             cumulative_weight = 0
-            for fortune, weight in self.fortunes:
+            for fortune, weight, emoji in self.fortunes:
                 cumulative_weight += weight
                 if rand_num <= cumulative_weight:
-                    print(f"[抽籤] {message.author} 抽到了：{fortune}")  # log 印出
-                    await message.send(f"{message.author.mention} 你的抽籤結果是：\n{fortune}")
+                    result = fortune
+                    result_emoji = emoji
                     break
+
+            # 逐張翻牌動畫
+            await draw_msg.edit(content=f"{result_emoji}")
+
+            # 顯示籤詩與對應的 emoji
+            await asyncio.sleep(0.4)  # 等待顯示後再顯示籤詩
+            await draw_msg.edit(content=f"{message.author.mention} 你的抽籤結果是：\n{result_emoji} {result}")
+            print(f"{message.author}: 你的抽籤結果是：\n{result_emoji} {result}")  # log 印出
         else:
             await message.send(f"{message.author.mention} 你今天已經抽過籤了，明天再來試試吧！")
 
@@ -81,6 +115,10 @@ class CommandCog(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message):
         if message.author.bot:
+            return
+
+        # 確保只有在 "湊湊福神社🍀" 頻道處理
+        if await check_channel_and_delete(message):
             return
 
         content = message.content.strip()
@@ -175,6 +213,8 @@ class CommandCog(commands.Cog):
     @commands.command(name="益生菌")
     @commands.cooldown(1, 5.0, BucketType.default)
     async def probiotic(self, message):
+        if await check_channel_and_delete(message):
+            return
         print(f"{message.author}: 益生菌")  # log 印出
         count = get_count("益生菌") + 1
         update_count("益生菌", count)
@@ -183,6 +223,8 @@ class CommandCog(commands.Cog):
     @commands.command(name="可愛")
     @commands.cooldown(1, 5.0, BucketType.default)
     async def i_am_cute(self, message):
+        if await check_channel_and_delete(message):
+            return
         print(f"{message.author}: 可愛")  # log 印出
         count = get_count("可愛") + 1
         update_count("可愛", count)
@@ -191,6 +233,8 @@ class CommandCog(commands.Cog):
     @commands.command(name="🍪")
     @commands.cooldown(1, 5.0, BucketType.default)
     async def cookie(self, message):
+        if await check_channel_and_delete(message):
+            return
         print(f"{message.author}: 🍪")  # log 印出
         count = get_count("🍪") + 1
         update_count("🍪", count)
@@ -199,6 +243,8 @@ class CommandCog(commands.Cog):
     @commands.command(name="買")
     @commands.cooldown(1, 5.0, BucketType.default)
     async def buy(self, message, *args):
+        if await check_channel_and_delete(message):
+            return
         print(f"{message.author}: 買")  # log 印出
         if len(args) != 2:
             await message.send("用法錯誤！正確格式：`!買 A B`")
@@ -209,6 +255,8 @@ class CommandCog(commands.Cog):
     @commands.command(name="還")
     @commands.cooldown(1, 5.0, BucketType.default)
     async def again(self, message, *args):
+        if await check_channel_and_delete(message):
+            return
         print(f"{message.author}: 還")  # log 印出
         if len(args) != 2:
             await message.send("用法錯誤！正確格式：`!還 A B`")
@@ -219,12 +267,16 @@ class CommandCog(commands.Cog):
     @commands.command(name="外送")
     @commands.cooldown(1, 5.0, BucketType.default)
     async def delivery(self, message):
+        if await check_channel_and_delete(message):
+            return
         print(f"{message.author}: 外送")  # log 印出
         await message.send(f"這裡沒有外送，誰再講外送就600，說的就是你 {message.author.mention}")
 
     @commands.command(name="指令")
     @commands.cooldown(1, 5.0, BucketType.default)
     async def show_commands(self, message):
+        if await check_channel_and_delete(message):
+            return
         print(f"{message.author}: 指令")  # log 印出
         commands_list = """```txt
 !益生菌 : 餵阿湊吃益生菌
