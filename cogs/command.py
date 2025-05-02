@@ -47,6 +47,36 @@ class CommandCog(commands.Cog):
         if now >= self.last_reset_time:
             self.cooldowns.clear()  # 重置所有cooldowns
             self.last_reset_time = self.get_next_reset_time()  # 更新為下一次6點
+    
+    @commands.command(name="每日抽籤")
+    async def daily_fortune(self, message):  # message 是一個 commands.Context 物件
+        """每天抽籤指令"""
+        # 檢查是否在湊湊福神社🍀頻道
+        if message.channel.name != "湊湊福神社🍀":
+            await message.send(f"{message.author.mention} 只有在「湊湊福神社🍀」這個頻道可以抽籤喔！")
+            return
+
+        user_id = message.author.id
+        if not self.is_on_cooldown(user_id, "每日抽籤"):
+            # 根據權重隨機抽籤
+            total_weight = sum(weight for _, weight in self.fortunes)
+            rand_num = random.uniform(0, total_weight)
+            cumulative_weight = 0
+            for fortune, weight in self.fortunes:
+                cumulative_weight += weight
+                if rand_num <= cumulative_weight:
+                    print(f"[抽籤] {message.author} 抽到了：{fortune}")  # log 印出
+                    await message.send(f"{message.author.mention} 你的抽籤結果是：\n{fortune}")
+                    break
+        else:
+            await message.send(f"{message.author.mention} 你今天已經抽過籤了，明天再來試試吧！")
+
+    @commands.command(name="清空抽籤")
+    @commands.is_owner()  # 只有機器人擁有者可以使用，或你可以改成 @commands.has_permissions(...)
+    async def clear_cooldowns(self, message):
+        self.cooldowns.clear()
+        print("[清空抽籤] 所有 cooldown 已清除")
+        await message.send("✅ 已清空所有使用者的抽籤紀錄。")
 
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -58,10 +88,12 @@ class CommandCog(commands.Cog):
 
         if content in ["?", "？", "蛤", "三小"]:
             if not self.is_on_cooldown(user_id, "問號"):
+                print(f"{message.author}: ?")  # log 印出
                 await message.channel.send("蛤？三小")
 
         elif any(kw in content for kw in ["安安", "早安", "早ㄤ", "你好", "ㄤㄤ"]):
             if not self.is_on_cooldown(user_id, "早安"):
+                print(f"{message.author}: 早安")  # log 印出
                 await message.channel.send(random.choice([
                     "安安今天過得好嗎",
                     "早安你好阿～今天也要元氣滿滿喔！",
@@ -77,6 +109,7 @@ class CommandCog(commands.Cog):
 
         elif any(kw in content for kw in ["我要睡了", "晚安", "晚ㄤ"]):
             if not self.is_on_cooldown(user_id, "晚安"):
+                print(f"{message.author}: 晚安")  # log 印出
                 await message.channel.send(random.choice([
                     "晚安～祝你有個好夢～",
                     "晚ㄤ！夢裡見啦～",
@@ -92,6 +125,7 @@ class CommandCog(commands.Cog):
 
         elif any(kw in content for kw in ["該不該", "該嗎"]):
             if not self.is_on_cooldown(user_id, "該"):
+                print(f"{message.author}: 該")  # log 印出
                 await message.channel.send(random.choice([
                     # 該
                     "當然該啊，你還猶豫什麼！",
@@ -109,46 +143,27 @@ class CommandCog(commands.Cog):
 
         elif "笑死" in content:
             if not self.is_on_cooldown(user_id, "笑死"):
+                print(f"{message.author}: 笑死")  # log 印出
                 await message.channel.send("真的 笑死")
 
         elif "sb" in content.lower():
             if not self.is_on_cooldown(user_id, "SB"):
+                print(f"{message.author}: SB")  # log 印出
                 await message.channel.send(f"{message.author.mention} 你才SB")
 
         elif "ㄐㄐ" in content:
             if not self.is_on_cooldown(user_id, "ㄐㄐ"):
+                print(f"{message.author}: ㄐㄐ")  # log 印出
                 count = get_count("ㄐㄐ") + 1
                 update_count("ㄐㄐ", count)
                 await message.channel.send(f"我已經說ㄐㄐ第{count}次了！ㄐㄐ！")
 
         elif "🍪" in content:
             if not self.is_on_cooldown(user_id, "🍪"):
+                print(f"{message.author}: 🍪")  # log 印出
                 count = get_count("🍪") + 1
                 update_count("🍪", count)
                 await message.channel.send(f"{message.author.mention} 阿嬤生產了第{count}片 🍪 了")
-
-    @commands.command(name="每日抽籤")
-    async def daily_fortune(self, ctx):
-        """每天抽籤指令"""
-        # 檢查是否在湊湊福神社🍀頻道
-        if ctx.channel.name != "湊湊福神社🍀":
-            await ctx.send(f"{ctx.author.mention} 只有在「湊湊福神社🍀」這個頻道可以抽籤喔！")
-            return
-
-        user_id = ctx.author.id
-        if not self.is_on_cooldown(user_id, "每日抽籤"):
-            # 根據權重隨機抽籤
-            total_weight = sum(weight for _, weight in self.fortunes)
-            rand_num = random.randint(1, total_weight)
-            cumulative_weight = 0
-            for fortune, weight in self.fortunes:
-                cumulative_weight += weight
-                if rand_num <= cumulative_weight:
-                    await ctx.send(f"{ctx.author.mention} 你的抽籤結果是：\n{fortune}")
-                    break
-        else:
-            await ctx.send(f"{ctx.author.mention} 你今天已經抽過籤了，明天再來試試吧！")
-
 
     # 靜默處理冷卻錯誤
     @commands.Cog.listener()
@@ -160,6 +175,7 @@ class CommandCog(commands.Cog):
     @commands.command(name="益生菌")
     @commands.cooldown(1, 5.0, BucketType.default)
     async def probiotic(self, message):
+        print(f"{message.author}: 益生菌")  # log 印出
         count = get_count("益生菌") + 1
         update_count("益生菌", count)
         await message.send(f"餵阿湊吃第{count}包益生菌")
@@ -167,6 +183,7 @@ class CommandCog(commands.Cog):
     @commands.command(name="可愛")
     @commands.cooldown(1, 5.0, BucketType.default)
     async def i_am_cute(self, message):
+        print(f"{message.author}: 可愛")  # log 印出
         count = get_count("可愛") + 1
         update_count("可愛", count)
         await message.send(f"我很可愛對不對？快點誇我可愛！才誇了第{count}次而已！")
@@ -174,6 +191,7 @@ class CommandCog(commands.Cog):
     @commands.command(name="🍪")
     @commands.cooldown(1, 5.0, BucketType.default)
     async def cookie(self, message):
+        print(f"{message.author}: 🍪")  # log 印出
         count = get_count("🍪") + 1
         update_count("🍪", count)
         await message.send(f"{message.author.mention}阿嬤生產了第{count}片 🍪 了")
@@ -181,6 +199,7 @@ class CommandCog(commands.Cog):
     @commands.command(name="買")
     @commands.cooldown(1, 5.0, BucketType.default)
     async def buy(self, message, *args):
+        print(f"{message.author}: 買")  # log 印出
         if len(args) != 2:
             await message.send("用法錯誤！正確格式：`!買 A B`")
             return
@@ -190,6 +209,7 @@ class CommandCog(commands.Cog):
     @commands.command(name="還")
     @commands.cooldown(1, 5.0, BucketType.default)
     async def again(self, message, *args):
+        print(f"{message.author}: 還")  # log 印出
         if len(args) != 2:
             await message.send("用法錯誤！正確格式：`!還 A B`")
             return
@@ -199,11 +219,13 @@ class CommandCog(commands.Cog):
     @commands.command(name="外送")
     @commands.cooldown(1, 5.0, BucketType.default)
     async def delivery(self, message):
+        print(f"{message.author}: 外送")  # log 印出
         await message.send(f"這裡沒有外送，誰再講外送就600，說的就是你 {message.author.mention}")
 
     @commands.command(name="指令")
     @commands.cooldown(1, 5.0, BucketType.default)
     async def show_commands(self, message):
+        print(f"{message.author}: 指令")  # log 印出
         commands_list = """```txt
 !益生菌 : 餵阿湊吃益生菌
 !買 A B : 慫恿你買東西
