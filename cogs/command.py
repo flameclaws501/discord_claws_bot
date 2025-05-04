@@ -15,15 +15,13 @@ async def check_channel_and_delete(message):
     # 獲取用戶所有身份組名稱
     user_roles = [role.name for role in message.author.roles]
 
-    # 在控制台打印用戶的身份組，幫助你調試
-    print(f"User {message.author.name} roles: {user_roles}")
-
     # 如果用戶擁有這三個身份組中的任意一個，則不刪除訊息
     if any(role in allowed_roles for role in user_roles):
         return False  # 不刪除訊息，繼續執行後續操作
 
     # 如果是 "湊湊福神社🍀" 頻道且用戶沒有上述身份組，則刪除訊息
-    if message.channel.name == "湊湊福神社🍀":
+    if message.channel.name == "湊湊福神社🍀" and not message.content.startswith("!每日抽籤"):
+        print(f"{message.author} 在湊湊福神社🍀 頻道輸入了：{message.content}")  # 記錄訊息
         await message.delete()  # 刪除訊息
         await message.channel.send(f"{message.author.mention} 只能使用 `!每日抽籤` 指令喔！")
         return True  # 停止處理，消息已刪除
@@ -34,7 +32,9 @@ class CommandCog(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
-        self.cooldowns = {}
+        self.lottery_cooldowns = {}  # user_id: datetime
+        self.cooldowns = {}          # (user_id, tag): datetime
+        self.cooldown_seconds = 5    # 可調整通用冷卻時間
         self.fortunes = [
             ("大吉：你的運氣極好，今後一段時間內，無論做什麼都會非常順利！成功將屬於你！", 10, "🎉"),
             ("中吉：這是個相對穩定的時期。努力會有所回報，保持積極心態，運氣會越來越好。", 10, "😊"),
@@ -46,71 +46,73 @@ class CommandCog(commands.Cog):
             ("凶：小心！近期的運勢偏向不利。不要輕易做出重大決策，保持冷靜並尋求他人建議。", 10, "💀"),
             ("大凶：運氣極差，可能會面臨一些不利的情況或挑戰。此時應該避開風險，做好準備。", 10, "☠️"),
         ]
-        self.last_reset_time = self.get_next_reset_time()
 
-    def get_next_reset_time(self):
-        """計算下一次重置的時間"""
+    def get_today_reset_time(self):
+        """取得今天的重置時間（早上 6 點），如果現在還沒到 6 點就回傳昨天 6 點"""
         now = datetime.now()
-        if now.hour >= 6:
-            return now.replace(hour=6, minute=0, second=0, microsecond=0) + timedelta(days=1)
-        return now.replace(hour=6, minute=0, second=0, microsecond=0)
+        reset_time = now.replace(hour=6, minute=0, second=0, microsecond=0)
+        if now < reset_time:
+            reset_time -= timedelta(days=1)
+        return reset_time
+    
+    def is_lottery_on_cooldown(self, user_id):
+        last_time = self.lottery_cooldowns.get(user_id)
+        if last_time is None:
+            return False
+        return last_time >= self.get_today_reset_time()  # 你原本的邏輯
 
-    def is_on_cooldown(self, user_id, trigger, cooldown=86400):  # 每天一次，所以86400秒
-        now = time.time()
-        key = (user_id, trigger)
-        last = self.cooldowns.get(key, 0)
-        if now - last < cooldown:
-            return True
-        self.cooldowns[key] = now
-        return False
+    def set_lottery_cooldown(self, user_id):
+        self.lottery_cooldowns[user_id] = datetime.now()
 
-    @tasks.loop(seconds=60)
-    async def reset_daily_cooldowns(self):
-        """每天6點重置所有用戶的抽籤紀錄"""
-        now = datetime.now()
-        if now >= self.last_reset_time:
-            self.cooldowns.clear()  # 重置所有cooldowns
-            self.last_reset_time = self.get_next_reset_time()  # 更新為下一次6點
+    def is_on_cooldown(self, user_id, tag=None):
+        key = (user_id, tag)
+        last_time = self.cooldowns.get(key)
+        if last_time is None:
+            return False
+        return last_time >= datetime.now() - timedelta(seconds=self.cooldown_seconds)
+
+    def set_cooldown(self, user_id, tag=None):
+        key = (user_id, tag)
+        self.cooldowns[key] = datetime.now()
+        
     
     @commands.command(name="每日抽籤")
     async def daily_fortune(self, message):
         """每天抽籤指令"""
         if message.channel.name != "湊湊福神社🍀":
-            await message.send(f"{message.author.mention} 只有在「湊湊福神社🍀」這個頻道可以抽籤喔！")
+            await message.channel.send(f"{message.author.mention} 只有在「湊湊福神社🍀」這個頻道可以抽籤喔！")
             return
 
         user_id = message.author.id
-        if not self.is_on_cooldown(user_id, "每日抽籤"):
-            # 發牌動畫：逐張顯示卡背
-            draw_msg = await message.send("🎴")
+        if self.is_on_cooldown(user_id):
+            await message.channel.send(f"{message.author.mention} 你今天已經抽過籤了，明天早上6點之後再來吧！")
+            return
 
-            # 抽籤邏輯（含 emoji）
-            total_weight = sum(weight for _, weight, _ in self.fortunes)
-            rand_num = random.uniform(0, total_weight)
-            cumulative_weight = 0
-            for fortune, weight, emoji in self.fortunes:
-                cumulative_weight += weight
-                if rand_num <= cumulative_weight:
-                    result = fortune
-                    result_emoji = emoji
-                    break
+        # 抽籤開始
+        self.set_lottery_cooldown(user_id)
+        draw_msg = await message.channel.send("🎴")
 
-            # 逐張翻牌動畫
-            await draw_msg.edit(content=f"{result_emoji}")
+        total_weight = sum(weight for _, weight, _ in self.fortunes)
+        rand_num = random.uniform(0, total_weight)
+        cumulative_weight = 0
+        for fortune, weight, emoji in self.fortunes:
+            cumulative_weight += weight
+            if rand_num <= cumulative_weight:
+                result = fortune
+                result_emoji = emoji
+                break
 
-            # 顯示籤詩與對應的 emoji
-            await asyncio.sleep(0.4)  # 等待顯示後再顯示籤詩
-            await draw_msg.edit(content=f"{message.author.mention} 你的抽籤結果是：\n{result_emoji} {result}")
-            print(f"{message.author}: 你的抽籤結果是：\n{result_emoji} {result}")  # log 印出
-        else:
-            await message.send(f"{message.author.mention} 你今天已經抽過籤了，明天再來試試吧！")
+        await draw_msg.edit(content=result_emoji)
+        await asyncio.sleep(0.4)
+        await draw_msg.edit(content=f"{message.author.mention} 你的抽籤結果是：\n{result_emoji} {result}")
+        print(f"{message.author}: 你的抽籤結果是：\n{result_emoji} {result}")
 
     @commands.command(name="清空抽籤")
     @commands.is_owner()  # 只有機器人擁有者可以使用，或你可以改成 @commands.has_permissions(...)
     async def clear_cooldowns(self, message):
         self.cooldowns.clear()
         print("[清空抽籤] 所有 cooldown 已清除")
-        await message.send("✅ 已清空所有使用者的抽籤紀錄。")
+        await message.channel.send("✅ 已清空所有使用者的抽籤紀錄。")
 
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -128,6 +130,7 @@ class CommandCog(commands.Cog):
             if not self.is_on_cooldown(user_id, "問號"):
                 print(f"{message.author}: ?")  # log 印出
                 await message.channel.send("蛤？三小")
+                self.set_cooldown(user_id, "問號")
 
         elif any(kw in content for kw in ["安安", "早安", "早ㄤ", "你好", "ㄤㄤ"]):
             if not self.is_on_cooldown(user_id, "早安"):
@@ -144,6 +147,7 @@ class CommandCog(commands.Cog):
                     "嗚哇～天亮啦！打個哈欠 ☁️",
                     "新的開始～今天也要加油 💪"
                 ]))
+                self.set_cooldown(user_id, "早安")
 
         elif any(kw in content for kw in ["我要睡了", "晚安", "晚ㄤ"]):
             if not self.is_on_cooldown(user_id, "晚安"):
@@ -160,6 +164,7 @@ class CommandCog(commands.Cog):
                     "晚安！蓋好棉被別著涼～",
                     "明天見啦，晚安 🌝"
                 ]))
+                self.set_cooldown(user_id, "晚安")
 
         elif any(kw in content for kw in ["該不該", "該嗎"]):
             if not self.is_on_cooldown(user_id, "該"):
@@ -178,16 +183,19 @@ class CommandCog(commands.Cog):
                     "理智點，這時候不行。",
                     "忍住，現在不該。"
                 ]))
+                self.set_cooldown(user_id, "該")
 
         elif "笑死" in content:
             if not self.is_on_cooldown(user_id, "笑死"):
                 print(f"{message.author}: 笑死")  # log 印出
                 await message.channel.send("真的 笑死")
+                self.set_cooldown(user_id, "笑死")
 
         elif "sb" in content.lower():
             if not self.is_on_cooldown(user_id, "SB"):
                 print(f"{message.author}: SB")  # log 印出
                 await message.channel.send(f"{message.author.mention} 你才SB")
+                self.set_cooldown(user_id, "SB")
 
         elif "ㄐㄐ" in content:
             if not self.is_on_cooldown(user_id, "ㄐㄐ"):
@@ -195,6 +203,7 @@ class CommandCog(commands.Cog):
                 count = get_count("ㄐㄐ") + 1
                 update_count("ㄐㄐ", count)
                 await message.channel.send(f"我已經說ㄐㄐ第{count}次了！ㄐㄐ！")
+                self.set_cooldown(user_id, "ㄐㄐ")
 
         elif "🍪" in content:
             if not self.is_on_cooldown(user_id, "🍪"):
@@ -202,6 +211,7 @@ class CommandCog(commands.Cog):
                 count = get_count("🍪") + 1
                 update_count("🍪", count)
                 await message.channel.send(f"{message.author.mention} 阿嬤生產了第{count}片 🍪 了")
+                self.set_cooldown(user_id, "🍪")
 
     # 靜默處理冷卻錯誤
     @commands.Cog.listener()
@@ -218,7 +228,7 @@ class CommandCog(commands.Cog):
         print(f"{message.author}: 益生菌")  # log 印出
         count = get_count("益生菌") + 1
         update_count("益生菌", count)
-        await message.send(f"餵阿湊吃第{count}包益生菌")
+        await message.channel.send(f"餵阿湊吃第{count}包益生菌")
 
     @commands.command(name="可愛")
     @commands.cooldown(1, 5.0, BucketType.default)
@@ -228,7 +238,7 @@ class CommandCog(commands.Cog):
         print(f"{message.author}: 可愛")  # log 印出
         count = get_count("可愛") + 1
         update_count("可愛", count)
-        await message.send(f"我很可愛對不對？快點誇我可愛！才誇了第{count}次而已！")
+        await message.channel.send(f"我很可愛對不對？快點誇我可愛！才誇了第{count}次而已！")
 
     @commands.command(name="🍪")
     @commands.cooldown(1, 5.0, BucketType.default)
@@ -238,7 +248,7 @@ class CommandCog(commands.Cog):
         print(f"{message.author}: 🍪")  # log 印出
         count = get_count("🍪") + 1
         update_count("🍪", count)
-        await message.send(f"{message.author.mention}阿嬤生產了第{count}片 🍪 了")
+        await message.channel.send(f"{message.author.mention}阿嬤生產了第{count}片 🍪 了")
 
     @commands.command(name="買")
     @commands.cooldown(1, 5.0, BucketType.default)
@@ -247,10 +257,10 @@ class CommandCog(commands.Cog):
             return
         print(f"{message.author}: 買")  # log 印出
         if len(args) != 2:
-            await message.send("用法錯誤！正確格式：`!買 A B`")
+            await message.channel.send("用法錯誤！正確格式：`!買 A B`")
             return
         A, B = args
-        await message.send(f"{A}，其實你想要的是{B}對吧！？你的慾望阿，就像是一顆橡皮球一樣...")
+        await message.channel.send(f"{A}，其實你想要的是{B}對吧！？你的慾望阿，就像是一顆橡皮球一樣...")
 
     @commands.command(name="還")
     @commands.cooldown(1, 5.0, BucketType.default)
@@ -259,10 +269,10 @@ class CommandCog(commands.Cog):
             return
         print(f"{message.author}: 還")  # log 印出
         if len(args) != 2:
-            await message.send("用法錯誤！正確格式：`!還 A B`")
+            await message.channel.send("用法錯誤！正確格式：`!還 A B`")
             return
         A, B = args
-        await message.send(f"{A}你還在{B}！叫你不要你還繼續！")
+        await message.channel.send(f"{A}你還在{B}！叫你不要你還繼續！")
 
     @commands.command(name="外送")
     @commands.cooldown(1, 5.0, BucketType.default)
@@ -270,7 +280,7 @@ class CommandCog(commands.Cog):
         if await check_channel_and_delete(message):
             return
         print(f"{message.author}: 外送")  # log 印出
-        await message.send(f"這裡沒有外送，誰再講外送就600，說的就是你 {message.author.mention}")
+        await message.channel.send(f"這裡沒有外送，誰再講外送就600，說的就是你 {message.author.mention}")
 
     @commands.command(name="指令")
     @commands.cooldown(1, 5.0, BucketType.default)
@@ -289,7 +299,7 @@ class CommandCog(commands.Cog):
 該不該 : 問問機爪人你該不該
 !每日抽籤 : 抽取今日運勢
 ```"""
-        await message.send(commands_list)
+        await message.channel.send(commands_list)
 
 async def setup(bot):
     await bot.add_cog(CommandCog(bot))
